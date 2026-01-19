@@ -208,6 +208,7 @@ forest_map_generator/forest_map_generator.py
 ```
 
 **Role**
+
 `TerrainHelper` is a shared utility class that encapsulates all terrain-related operations, providing a consistent abstraction over the heightmap-based terrain model used in Gazebo.
 
 It serves as the geometric and physical foundation for both tree and road generation by:
