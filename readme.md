@@ -270,12 +270,6 @@ This design avoids duplicated terrain logic and ensures that all procedural elem
 - Heightmap resolution matches `terrain_size_x × terrain_size_y`.
 - The terrain model is centered at the world origin with symmetric extents.
 
-**Reproducibility Note**
-
-All geometric computations performed by `TerrainHelper` are deterministic for a fixed heightmap and parameter set.  
-Any non-determinism in the overall generation pipeline originates from higher-level sampling logic
-(e.g., random tree placement and orientation).
-
 
 
 ---
