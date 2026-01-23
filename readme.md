@@ -9,6 +9,21 @@ terrain heightmaps, procedural tree placement, and road mesh generation.
 
 ---
 
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Repository Layout](#repository-layout)
+- [Key Components](#key-components)
+  - [1. ForestMapGenerator (ROS 2 Node)](#1-forestmapgenerator-ros-2-node)
+  - [2. TerrainHelper (Terrain Abstraction Layer)](#2-terrainhelper-terrain-abstraction-layer)
+  - [3. TreeGenerator](#3-treegenerator)
+  - [4. RoadGenerator (Road Mesh + Simple Path Planning)](#4-roadgenerator-road-mesh--simple-path-planning)
+  - [5. update_heightmap script (Heightmap → Terrain SDF Update)](#5-update_heightmap-script-heightmap--terrain-sdf-update)
+  - [6. ply_to_gazebo_textured pipeline (PLY → Gazebo Tree Model)](#6-ply_to_gazebo_textured-pipeline-ply--gazebo-tree-model)
+
+---
+
 ## Overview
 
 This project provides a complete pipeline to build a forest scene for Gazebo from:
@@ -136,7 +151,7 @@ ros2 launch forest_map_generator tree_generator.launch.py
 
 The node writes a generated world file to the package worlds/ directory (see output_world_file below).
 
-**Paraments**
+**Parameters**
 
 | Parameter | Type | Description |
 |----------|------|-------------|
@@ -160,7 +175,7 @@ worlds/<output_world_file>
 
 What is written into the world
 
-- A list of Gazebo <include> blocks, one per generated tree instance
+- A list of Gazebo `<include>` blocks, one per generated tree instance
 
 - Each instance includes a randomized yaw for visual diversity
 
@@ -271,6 +286,272 @@ This design avoids duplicated terrain logic and ensures that all procedural elem
 - Heightmap resolution matches `terrain_size_x × terrain_size_y`.
 - The terrain model is centered at the world origin with symmetric extents.
 
+
+### 3. TreeGenerator
+
+**Location**
+```text
+forest_map_generator/forest_map_generator.py
+```
+
+**Role**
+TreeGenerator is responsible for procedural tree placement on the terrain heightmap and generating the corresponding Gazebo `<include>` blocks that will be injected into the output .world file. It inherits TerrainHelper so that placement validation and pixel-to-world coordinate conversion are consistent with the shared terrain model assumptions.
+
+**Inputs (ROS 2 Parameters)**
+
+| Parameter | Type | Description |
+|----------|------|-------------|
+| `num_trees` | `int` | Number of tree instances to place. |
+| `tree_types` | `list[string]` | List of Gazebo model names under models/ (e.g., oak_tree, pine_tree). A random type is selected per placement. |
+| `min_tree_distance` | `float` | Minimum spacing constraint between any two placed trees. |
+| `max_slope` | `float` | Maximum allowable terrain slope in degrees. Candidate points with slope >= max_slope will be rejected. |
+| `heightmap_file` | `string` | Heightmap image filename under models/terrain/heightmaps/. Used for elevation lookup and slope evaluation. |
+| `terrain_size_x` | `int` | Heightmap resolution in X (pixels). |
+| `terrain_size_y` | `int` | Heightmap resolution in Y (pixels). |
+| `terrain_size_z` | `float` | Terrain vertical scale used to map heightmap values into world-frame Z. |
+
+**Execution Flow**
+1) Load the heightmap as a grayscale image and convert it to float32
+2) Randomly sample candidate pixel coordinates (px, py)
+3) Validate each candidate using boundary margin checks, local slope check, and minimum distance constraint to previously placed trees
+4) Convert accepted pixel coordinates into world coordinates (x, y, z)
+5) Generate one Gazebo `<include>` block per accepted placement
+6) Return the full list of accepted trees and the concatenated XML snippet
+
+**Key Methods**
+
+| Method | Description |
+|------|-------------|
+| `generate_trees()` | Main placement loop. Randomly samples pixels and accepts valid tree positions until num_trees is reached or attempts exceed the limit. |
+| `is_valid_tree_position(px, py, trees)` | Validity check for a candidate pixel: border constraints, slope check, and distance check against existing trees. |
+| `create_tree_include_xml(tree_type, world_x, world_y, world_z, tree_id)` | Creates one `<include>` block for the selected tree type at a computed world pose, with randomized yaw. |
+| `generate_trees_xml(trees)` | Converts all accepted tree placements into a single XML string to inject into the output world. |
+
+**Output**
+```text
+worlds/<output_world_file>
+```
+
+What is written into the world:
+- A list of Gazebo `<include>` blocks, one per generated tree instance
+- Each instance includes a randomized yaw for visual diversity
+- Tree placement is slope-aware and respects minimum spacing constraints
+
+**Customization Guide (How to Define Your Own Tree Placement Logic)**
+To customize the tree generation logic, the recommended approach is to modify or extend:
+
+1) **Candidate sampling strategy**
+- Edit: TreeGenerator.generate_trees()
+- Example: restrict sampling to a region, or apply weighted sampling
+
+2) **Validity constraints**
+- Edit: TreeGenerator.is_valid_tree_position(px, py, trees)
+- Example: add elevation limits, biome masks, or per-type slope limits
+
+3) **Model selection / pose formatting**
+- Edit: TreeGenerator.create_tree_include_xml(...)
+- Example: weighted tree type sampling, fixed yaw, custom naming rules
+
+
+### 4. RoadGenerator (Road Mesh + Simple Path Planning)
+
+**Location**
+```text
+forest_map_generator/forest_map_generator.py
+```
+
+**Role**
+RoadGenerator generates a smooth road mesh (`road.stl`) and injects a road `<include>` block into the output `.world` file. It evaluates road endpoints and the resulting path directly on the terrain heightmap, reusing `TerrainHelper` for slope checks and coordinate conversion.
+
+**Main Parameters**
+- **road_length** (float): target road length in meters used when selecting endpoints
+- **road_width** (float): road mesh width in meters
+- **road_min_tree_dist** (float): minimum clearance from any generated tree (world-frame distance)
+- **max_slope** (float): maximum allowable slope (deg) for road samples
+
+**Execution Flow**
+1) Convert generated trees from pixel coordinates to world-frame `XY` for clearance checks
+2) Sample candidate road endpoints in world coordinates and filter by slope and tree clearance
+3) Select a best endpoint pair whose distance is closest to `road_length`
+4) Generate a path between endpoints using a simple line-based sampling strategy
+5) Expand the path into a ribbon mesh, triangulate it, and save as `STL`
+6) Return a road `<include>` XML block for insertion into the generated world
+
+**Key Methods**
+
+| Method | Description |
+|------|-------------|
+| `generate_roads()` | Orchestrates endpoint selection, path generation, mesh export, and returns the road injection XML. |
+| `find_start_end()` | Samples endpoint candidates in world coordinates, filters by slope and tree clearance, and selects the pair closest to `road_length`. |
+| `bresenham_line(x0, y0, x1, y1)` | Produces integer pixel coordinates along a straight line between start and end pixels. |
+| `astar_path_planning(start, end)` | Current implementation uses a straight-line sample set and filters points by slope and tree clearance, then converts accepted pixels into world-frame points. |
+| `generate_road_xml(path_world)` | Builds a simple ribbon mesh from `path_world`, saves `models/road/meshes/road.stl`, and returns the Gazebo road `<include>` block. |
+
+**Output**
+- Road mesh:
+```text
+models/road/meshes/road.stl
+```
+
+- World injection:
+```text
+<include>
+  <uri>model://road</uri>
+  <name>generated_road</name>
+  <pose>0 0 0 0 0 0</pose>
+</include>
+```
+
+**Planned Improvements**
+RoadGenerator currently uses a simplified straight-line sampling approach for path generation and a minimal ribbon mesh construction. Future work is planned in two areas:
+
+1) **Road mesh / model fidelity**
+- add thickness and collision-friendly geometry
+- add UVs and textures for visual realism
+- smoother curvature control and better handling of sharp turns
+- optional elevation smoothing to reduce road waviness on rough terrain
+
+2) **Path planning algorithm**
+- replace the current line-filtering approach with a real grid-based `A*` (or `Dijkstra`) using:
+  - slope cost
+  - distance-to-tree cost
+  - optional obstacle masks
+- improve continuity by post-smoothing the path (e.g., spline fitting) while maintaining constraints
+
+
+### 5. update_heightmap script (Heightmap → Terrain SDF Update)
+
+**Location**
+```text
+scripts/update_heightmap/main.py
+```
+
+**Role**
+This script updates the terrain model SDF (`models/terrain/model.sdf`) to reference a new heightmap, and ensures the heightmap image is copied into the Gazebo-discoverable model path under `models/terrain/materials/textures/`.
+
+It edits the `<heightmap>` block(s) in the SDF, updating:
+- `<uri>`: points to the heightmap under `model://terrain/materials/textures/`
+- `<size>`: sets `(width, height, height_range)`
+- `<blend>`: ensures exactly two blend entries and updates their `min_height` and `fade_dist`
+- `<pos>`: sets terrain heightmap pose offset
+
+**CLI Arguments**
+- `--heightmap`: input heightmap PNG path
+- `--height_range`: vertical scale used in `<size>` (meters)
+- `--blend1_min` / `--blend1_fade`: texture blend layer 1 parameters
+- `--blend2_min` / `--blend2_fade`: texture blend layer 2 parameters
+- `--pos_x` / `--pos_y` / `--pos_z`: heightmap pose offset written into `<pos>`
+- `--terrain_sdf`: target terrain SDF path (default: `models/terrain/model.sdf`)
+- `--target_dir`: copy destination for heightmap (default: `models/terrain/materials/textures/`)
+- `--dry_run`: print computed values without modifying files
+
+**Execution Flow**
+1) Resolve package paths and defaults
+2) Validate heightmap file exists and read image dimensions `(w, h)`
+3) Construct SDF fields:
+   - `uri = model://terrain/materials/textures/<heightmap_name>`
+   - `size = "w h height_range"`
+   - `pos = "pos_x pos_y pos_z"`
+4) Parse the SDF and locate all `<heightmap>` blocks
+5) For each `<heightmap>`:
+   - set `<uri>`, `<size>`, `<pos>`
+   - enforce exactly two `<blend>` entries and update blend parameters
+6) If not `--dry_run`:
+   - create a timestamped backup of the original SDF
+   - copy the heightmap PNG into `target_dir`
+   - write the updated SDF back to disk
+
+**Outputs**
+- Heightmap copied to:
+```text
+models/terrain/materials/textures/<heightmap_name>.png
+```
+
+- Terrain SDF updated:
+```text
+models/terrain/model.sdf
+```
+
+- Backup created:
+```text
+models/terrain/model.sdf.bak_<YYYYMMDD_HHMMSS>
+```
+
+**Notes**
+- The script edits every `<heightmap>` block found in the SDF (supports multiple occurrences).
+- The script prints the final computed `uri`, `size`, `pos`, and copy destination for verification before writing.
+
+
+### 6. ply_to_gazebo_textured pipeline (PLY → Gazebo Tree Model)
+
+**Location**
+```text
+scripts/ply_to_gazebo_textured/
+├── main.py
+└── bake_vcol_to_texture.py
+```
+
+**Role**
+This pipeline converts colored point clouds (`.ply`) into Gazebo-ready tree models under `models/<tree_name>/`. It produces a textured visual mesh (`.dae` + albedo `.png`) and a simplified collision mesh (`.stl`).
+
+`main.py` handles point cloud processing, mesh reconstruction, simplification, and collision generation. Texture baking and Collada export are delegated to Blender via `bake_vcol_to_texture.py`.
+
+**Inputs**
+- Point clouds placed under:
+```text
+scripts/ply_to_gazebo_textured/trees_ply/*.ply
+```
+
+- Requires `open3d` and a working Blender CLI (`blender` in `PATH` or configured via `BLENDER_BIN`).
+
+**Execution Flow**
+1) Load `.ply` point cloud using `open3d`
+2) Normalize geometry:
+   - center `XY` at the cloud centroid
+   - shift `Z` so the base is at `Z=0`
+3) Downsample to `TARGET_POINTS` if needed
+4) Estimate normals and run Poisson surface reconstruction
+5) Remove low-density vertices and clean mesh topology
+6) Transfer vertex colors from point cloud to mesh (kNN weighted average), or paint a uniform fallback color
+7) Generate visual mesh:
+   - simplify to `VISUAL_MAX_TRIANGLES`
+   - export an intermediate colored visual `.ply`
+8) Run Blender texture baking:
+   - bake vertex colors into a texture image (`*_albedo.png`)
+   - generate UVs if missing
+   - export textured Collada (`tree_mesh.dae`)
+9) Generate collision mesh:
+   - simplify to `COLLISION_MAX_TRIANGLES`
+   - export collision geometry as `tree_collision.stl`
+
+**Outputs**
+For each input `<tree_name>.ply`, the pipeline creates:
+```text
+models/<tree_name>/
+└── meshes/
+    ├── tree_mesh.dae
+    ├── tree_collision.stl
+    ├── <tree_name>_albedo.png
+    └── <tree_name>_visual_colored.ply
+```
+
+**Key Scripts**
+- `main.py`
+  - reconstructs meshes from point clouds (`Poisson`)
+  - applies decimation for visual and collision meshes
+  - calls Blender for UV + texture baking
+  - writes outputs into `models/<tree_name>/meshes/`
+
+- `bake_vcol_to_texture.py`
+  - imports the intermediate colored mesh (`.ply`)
+  - creates UVs if missing (`uv.smart_project`)
+  - builds a node graph that reads vertex color and bakes it to an image via `EMIT`
+  - saves the baked texture (`.png`) and exports Collada (`.dae`)
+
+**Notes**
+- The visual mesh is intended for rendering (`tree_mesh.dae` + `*_albedo.png`).
+- The collision mesh is intentionally simplified for simulation performance (`tree_collision.stl`).
+- Blender is invoked in headless mode (`-b`) and called from `main.py` via `subprocess`.
 
 
 ---
