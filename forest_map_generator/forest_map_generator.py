@@ -5,7 +5,8 @@ import math
 import rclpy
 import random
 import numpy as np
-from stl import mesh
+import xml.etree.ElementTree as ET
+
 from rclpy.node import Node
 from ament_index_python.packages import get_package_share_directory
 
@@ -16,20 +17,47 @@ class TerrainHelper:
         self.node = node
         self.get_logger = node.get_logger
 
+        package_share_dir = get_package_share_directory("forest_map_generator")
+        sdf_file_path = os.path.join(
+            package_share_dir, "models", "terrain", "materials", "model.sdf"
+        )
+        if not os.path.exists(sdf_file_path):
+            self.get_logger().warn(f"SDF file {sdf_file_path} does not exist.")
+            sdf_file_path = os.path.join(
+                package_share_dir, "models", "terrain", "model.sdf"
+            )
+
+        self.terrain_sdf_metadata = self.load_terrain_sdf_metadata(sdf_file_path)
+        if self.terrain_sdf_metadata is None:
+            self.get_logger().error("Failed to load terrain_sdf_metadata.")
+            return
+
+        (
+            terrain_world_size_x,
+            terrain_world_size_y,
+            terrain_world_size_z,
+        ), (
+            terrain_world_pos_x,
+            terrain_world_pos_y,
+            terrain_world_pos_z,
+        ), min_height_second_layer, min_height_third_layer, heightmap_file = self.terrain_sdf_metadata
+
+        self.heightmap_file = heightmap_file
         self.package_path = node.package_path
-        self.heightmap_file = node.heightmap_file
-        self.terrain_size_x = node.terrain_size_x
-        self.terrain_size_y = node.terrain_size_y
-        self.terrain_size_z = node.terrain_size_z
+        self.terrain_size_x = terrain_world_size_x
+        self.terrain_size_y = terrain_world_size_y
+        self.terrain_size_z = terrain_world_size_z
+        self.terrain_world_pos_x = terrain_world_pos_x
+        self.terrain_world_pos_y = terrain_world_pos_y
+        self.terrain_world_pos_z = terrain_world_pos_z
+        self.min_height_second_layer = min_height_second_layer
+        self.min_height_third_layer = min_height_third_layer
         self.max_slope = node.max_slope
 
-        self.heightmap_data = None
+        self.heightmap_data = self.load_heightmap()
 
     def load_heightmap(self):
-        heightmap_path = os.path.join(
-            self.package_path, "models", "terrain", "heightmaps", self.heightmap_file
-        )
-
+        heightmap_path = os.path.join(self.package_path, "models", *self.heightmap_file)
         if not os.path.exists(heightmap_path):
             self.get_logger().error(f"Heightmap file {heightmap_path} does not exist.")
             return None
@@ -43,64 +71,141 @@ class TerrainHelper:
                 return None
             heightmap_data = np.array(heightmap_data, dtype=np.float32)
             self.heightmap_data = heightmap_data
-            return heightmap_data
+            return self.heightmap_data
         except Exception as e:
             self.get_logger().error(f"Error loading heightmap: {e}")
             return None
 
-    def calculate_scope(self, px, py, radius=1):
-        heightmap_data = self.load_heightmap()
-        if heightmap_data is None:
+    @staticmethod
+    def parse_sdf_vector3(value, tag_name):
+        if value is None:
+            raise ValueError(f"Missing <{tag_name}> tag")
+
+        vector = [float(component) for component in value.split()]
+        if len(vector) < 3:
+            raise ValueError(f"<{tag_name}> must contain at least 3 values")
+
+        return vector[:3]
+
+    @staticmethod
+    def find_sdf_text(root, paths):
+        for path in paths:
+            value = root.findtext(path)
+            if value is not None:
+                return value
+        return None
+
+    def load_terrain_sdf_metadata(self, sdf_file_path):
+        try:
+            root = ET.parse(sdf_file_path).getroot()
+            size_text = self.find_sdf_text(
+                root,
+                [
+                    ".//link[@name='link']/visual/size",
+                    ".//link[@name='link']/visual/geometry/heightmap/size",
+                    ".//visual/geometry/heightmap/size",
+                ],
+            )
+            pos_text = self.find_sdf_text(
+                root,
+                [
+                    ".//link[@name='link']/visual/pos",
+                    ".//link[@name='link']/visual/pose",
+                    ".//link[@name='link']/visual/geometry/heightmap/pos",
+                    ".//link[@name='link']/visual/geometry/heightmap/pose",
+                    ".//visual/geometry/heightmap/pos",
+                    ".//visual/geometry/heightmap/pose",
+                ],
+            )
+            terrain_world_size = self.parse_sdf_vector3(size_text, "size")
+            terrain_world_pos = self.parse_sdf_vector3(pos_text, "pos")
+
+            # terrain design (in model.sdf) has three blend layers: 1st Dirt, 2nd Grass, 3rd Fungi
+            # getting the minimum height for the second and third layer
+            min_height = root.findtext(
+                ".//link[@name='link']/visual/geometry/heightmap/blend[1]/min_height",
+            )
+            fade_dist = root.findtext(".//link[@name='link']/visual/geometry/heightmap/blend[1]/fade_dist")
+            min_height_second_layer = float(min_height) + float(fade_dist) + np.floor(0.1 * terrain_world_size[-1])
+            min_height = root.findtext(
+                ".//link[@name='link']/visual/geometry/heightmap/blend[2]/min_height",
+            )
+            fade_dist = root.findtext(".//link[@name='link']/visual/geometry/heightmap/blend[2]/fade_dist")
+            min_height_third_layer = float(min_height) + float(fade_dist) + np.floor(0.1 * terrain_world_size[-1])
+
+            heightmap_file = root.findtext(".//link[@name='link']/visual/geometry/heightmap/uri").split("/")[2:]
+
+            self.terrain_sdf_metadata = (
+                terrain_world_size, terrain_world_pos,
+                min_height_second_layer, min_height_third_layer,
+                heightmap_file
+            )
+            return self.terrain_sdf_metadata
+        except (OSError, ET.ParseError, ValueError) as e:
+            self.get_logger().error(f"Error loading terrain SDF metadata: {e}")
+            return None
+
+    def calculate_scope(self, px, py, radius=2):
+        if self.heightmap_data is None:
             return self.max_slope
 
         if (
             px < radius
-            or px >= heightmap_data.shape[1] - radius
+            or px >= self.heightmap_data.shape[1] - radius
             or py < radius
-            or py >= heightmap_data.shape[0] - radius
+            or py >= self.heightmap_data.shape[0] - radius
         ):
             return self.max_slope
 
-        dz_dx = (heightmap_data[py, px + 1] - heightmap_data[py, px - 1]) / 2.0
-        dz_dy = (heightmap_data[py + 1, px] - heightmap_data[py - 1, px]) / 2.0
-        slope_angle = math.degrees(math.atan(math.sqrt(dz_dx**2 + dz_dy**2)))
+        dz_dx = (self.heightmap_data[py, px + radius] - self.heightmap_data[py, px - radius])
+        dz_dy = (self.heightmap_data[py + radius, px] - self.heightmap_data[py - radius, px])
+        slope_angle = math.degrees(math.atan2(dz_dy, dz_dx))
         return slope_angle
 
     def pixel_to_world(self, px, py):
-        heightmap_data = self.load_heightmap()
-        if heightmap_data is None:
+        if self.heightmap_data is None:
             self.get_logger().error("No heightmap data for coordinate conversion.")
             return 0.0, 0.0, 0.0
 
-        terrain_world_size_x = 257.0
-        terrain_world_size_y = 257.0
-        terrain_world_size_z = 50.0
-        terrain_world_pos_x = 0.0
-        terrain_world_pos_y = 0.0
-        terrain_world_pos_z = 0.0
+        height, width = self.heightmap_data.shape
 
-        normalized_x = (px / (self.terrain_size_x - 1)) - 0.5
-        normalized_y = (py / (self.terrain_size_y - 1)) - 0.5
-
-        world_x = terrain_world_pos_x + normalized_x * terrain_world_size_x
-        world_y = terrain_world_pos_y - normalized_y * terrain_world_size_y
-        height_value = heightmap_data[py, px]
-        world_z = terrain_world_pos_z + (height_value / 255.0) * terrain_world_size_z
-
+        world_x = (
+            self.terrain_world_pos_x
+            - self.terrain_size_x / 2.0
+            + px * self.terrain_size_x / (width - 1)
+        )
+        world_y = (
+            self.terrain_world_pos_y
+            + self.terrain_size_y / 2.0
+            - py * self.terrain_size_y / (height - 1)
+        )
+        height_value = self.heightmap_data[py, px]
+        world_z = (
+            self.terrain_world_pos_z
+            + (height_value / np.max(self.heightmap_data)) * self.terrain_size_z
+        )
         return world_x, world_y, world_z
 
     def world_to_pixel(self, world_x, world_y):
-        terrain_world_size_x = 257.0
-        terrain_world_size_y = 257.0
+        if self.heightmap_data is None:
+            self.get_logger().error("No heightmap data for coordinate conversion.")
+            return 0, 0
 
-        normalized_x = (world_x / terrain_world_size_x) + 0.5
-        normalized_y = -(world_y / terrain_world_size_y) + 0.5
+        height, width = self.heightmap_data.shape
 
-        px = int(normalized_x * (self.terrain_size_x - 1))
-        py = int(normalized_y * (self.terrain_size_y - 1))
+        px = round(
+            (world_x - (self.terrain_world_pos_x - self.terrain_size_x / 2.0))
+            * (width - 1)
+            / self.terrain_size_x
+        )
+        py = round(
+            ((self.terrain_world_pos_y + self.terrain_size_y / 2.0) - world_y)
+            * (height - 1)
+            / self.terrain_size_y
+        )
 
-        px = max(0, min(self.terrain_size_x - 1, px))
-        py = max(0, min(self.terrain_size_y - 1, py))
+        px = max(0, min(width - 1, px))
+        py = max(0, min(height - 1, py))
         return px, py
 
 
@@ -112,6 +217,7 @@ class TreeGenerator(TerrainHelper):
         self.num_trees = node.num_trees
         self.tree_types = node.tree_types
         self.min_tree_distance = node.min_tree_distance
+        self.plant_tree_above_dirt = node.plant_tree_above_dirt
 
     def is_valid_tree_position(self, px, py, trees):
         if (
@@ -126,6 +232,13 @@ class TreeGenerator(TerrainHelper):
         if slope >= self.max_slope:
             return False
 
+        if self.plant_tree_above_dirt and self.heightmap_data[py, px] < self.min_height_second_layer:
+            self.get_logger().info(
+                f"""Minimum allowed height to plant is above dirt level at {self.min_height_second_layer}, 
+                    the current height at {px}, {py} is {self.heightmap_data[py, px]}"""
+            )
+            return False
+
         for tree_x, tree_y, _ in trees:
             dist = math.sqrt((px - tree_x) ** 2 + (py - tree_y) ** 2)
             if dist < self.min_tree_distance:
@@ -133,9 +246,9 @@ class TreeGenerator(TerrainHelper):
 
         return True
 
-    def create_tree_include_xml(self, tree_type, world_x, world_y, world_z, tree_id):
+    @staticmethod
+    def create_tree_include_xml(tree_type, world_x, world_y, world_z, tree_id):
         yaw = random.uniform(0, 2 * math.pi)
-
         tree_xml = f"""
         <include>
             <name>{tree_type}_{tree_id}</name>
@@ -147,19 +260,18 @@ class TreeGenerator(TerrainHelper):
 
     def generate_trees(self):
         self.get_logger().info(
-            f"Generating {self.num_trees} trees on heightmap {self.heightmap_file}..."
+            f"Generating {self.num_trees} trees on heightmap {self.heightmap_file[-1]}..."
         )
 
-        heightmap_data = self.load_heightmap()
-        if heightmap_data is None:
+        if self.heightmap_data is None:
             self.get_logger().error(
                 "Heightmap data could not be loaded. Aborting tree generation."
             )
             return []
 
-        self.get_logger().info(f"Heightmap dimensions: {heightmap_data.shape}")
+        self.get_logger().info(f"Heightmap dimensions: {self.heightmap_data.shape}")
         self.get_logger().info(
-            f"Heightmap value range: {np.min(heightmap_data)} to {np.max(heightmap_data)}"
+            f"Heightmap value range: {np.min(self.heightmap_data)} to {np.max(self.heightmap_data)}"
         )
 
         trees = []
@@ -168,19 +280,15 @@ class TreeGenerator(TerrainHelper):
 
         while len(trees) < self.num_trees and attempts < max_attempts:
             attempts += 1
-            px = random.randint(0, heightmap_data.shape[1] - 1)
-            py = random.randint(0, heightmap_data.shape[0] - 1)
+            px = random.randint(0, self.heightmap_data.shape[1] - 1)
+            py = random.randint(0, self.heightmap_data.shape[0] - 1)
 
             if self.is_valid_tree_position(px, py, trees):
                 tree_type = random.choice(self.tree_types)
                 trees.append((px, py, tree_type))
-                if len(trees) == 1:
-                    world_x, world_y, world_z = self.pixel_to_world(px, py)
-                    self.get_logger().info(
-                        f"First tree - Pixel: ({px}, {py}), World: ({world_x:.2f}, {world_y:.2f}, {world_z:.2f})"
-                    )
+                world_x, world_y, world_z = self.pixel_to_world(px, py)
                 self.get_logger().info(
-                    f"Placed tree {len(trees)}/{self.num_trees} at ({px}, {py})"
+                    f"Placed tree {len(trees)}/{self.num_trees} at ({px}, {py}), World: ({world_x:.2f}, {world_y:.2f}, {world_z:.2f})"
                 )
 
         self.get_logger().info(f"Tree placement completed. {len(trees)} trees placed.")
@@ -197,268 +305,37 @@ class TreeGenerator(TerrainHelper):
         return trees_xml
 
 
-# Road generation class
-class RoadGenerator(TerrainHelper):
-    def __init__(self, node, trees):
-        super().__init__(node)
-
-        self.node = node
-        self.get_logger = node.get_logger
-        self.package_path = node.package_path
-
-        self.road_length = node.road_length
-        self.road_width = node.road_width
-        self.road_min_tree_dist = node.road_min_tree_dist
-        self.tree_world_pos = []
-
-        for px, py, _ in trees:
-            wx, wy, _ = self.pixel_to_world(px, py)
-            self.tree_world_pos.append((wx, wy))
-
-        self.get_logger().info(
-            "RoadGenerator initialized with road length: %.1fm, road width: %.1fm, min tree distance: %.1fm"
-            % (self.road_length, self.road_width, self.road_min_tree_dist)
-        )
-
-    def find_start_end(self):
-        height_map = self.load_heightmap()
-
-        if height_map is None:
-            self.get_logger().error(
-                "Heightmap data could not be loaded. Aborting road generation."
-            )
-            return None, None
-
-        candidates = []
-        for _ in range(100):
-            wx = random.uniform(-128.0, 128.0)
-            wy = random.uniform(-128.0, 128.0)
-            px, py = self.world_to_pixel(wx, wy)
-
-            slope = self.calculate_scope(px, py)
-            if slope >= self.max_slope:
-                continue
-
-            valid = True
-            for tx, ty in self.tree_world_pos:
-                dist = math.sqrt((wx - tx) ** 2 + (wy - ty) ** 2)
-                if dist < self.road_min_tree_dist:
-                    valid = False
-                    break
-            if not valid:
-                continue
-
-            if (
-                px < 10
-                or px >= height_map.shape[1] - 10
-                or py < 10
-                or py >= height_map.shape[0] - 10
-            ):
-                continue
-
-            candidates.append((wx, wy))
-
-        if len(candidates) < 2:
-            self.get_logger().error("Not enough valid candidates for road endpoints.")
-            return None, None
-
-        best_pair = None
-        min_dist_diff = float("inf")
-        for i in range(len(candidates)):
-            for j in range(i + 1, len(candidates)):
-                dist = math.hypot(
-                    candidates[i][0] - candidates[j][0],
-                    candidates[i][1] - candidates[j][1],
-                )
-                dist_diff = abs(dist - self.road_length)
-                if dist_diff < min_dist_diff:
-                    min_dist_diff = dist_diff
-                    best_pair = (candidates[i], candidates[j])
-
-        if best_pair is None:
-            self.get_logger().error("No valid road endpoints found.")
-            return None, None
-
-        return best_pair[0], best_pair[1]
-
-    def bresenham_line(self, x0, y0, x1, y1):
-        dx = abs(x1 - x0)
-        dy = abs(y1 - y0)
-        sx = 1 if x0 < x1 else -1
-        sy = 1 if y0 < y1 else -1
-        err = dx - dy
-        x, y = x0, y0
-        line = []
-        while True:
-            line.append((x, y))
-            if x == x1 and y == y1:
-                break
-            e2 = 2 * err
-            if e2 > -dy:
-                err -= dy
-                x += sx
-            if e2 < dx:
-                err += dx
-                y += sy
-        return zip(*line)
-
-    def astar_path_planning(self, start, end):
-        start_px, start_py = self.world_to_pixel(start[0], start[1])
-        end_px, end_py = self.world_to_pixel(end[0], end[1])
-
-        path_px = []
-        line_px, line_py = self.bresenham_line(start_px, start_py, end_px, end_py)
-
-        for px, py in zip(line_px, line_py):
-            slope = self.calculate_scope(px, py)
-            if slope >= self.max_slope:
-                continue
-            wx, wy, _ = self.pixel_to_world(px, py)
-            valid = True
-            for tx, ty in self.tree_world_pos:
-                if math.hypot(wx - tx, wy - ty) < self.road_min_tree_dist:
-                    valid = False
-                    break
-            if valid:
-                path_px.append((px, py))
-
-        path_world = [self.pixel_to_world(px, py) for px, py in path_px]
-        return path_world
-
-    def generate_road_xml(self, path_world):
-        if len(path_world) < 2:
-            return ""
-
-        vertices = []
-        road_width = self.road_width
-        for i in range(len(path_world)):
-            x, y, z = path_world[i]
-
-            if i == 0:
-                next_x, next_y, _ = path_world[i + 1]
-                dx, dy = next_x - x, next_y - y
-            elif i == len(path_world) - 1:
-                prev_x, prev_y, _ = path_world[i - 1]
-                dx, dy = x - prev_x, y - prev_y
-            else:
-                next_x, next_y, _ = path_world[i + 1]
-                prev_x, prev_y, _ = path_world[i - 1]
-                dx = (next_x - prev_x) / 2
-                dy = (next_y - prev_y) / 2
-
-            length = math.sqrt(dx * dx + dy * dy) + 1e-5
-            dx, dy = dx / length, dy / length
-
-            nx, ny = -dy, dx
-
-            left_x = x + nx * (road_width / 2)
-            left_y = y + ny * (road_width / 2)
-            right_x = x - nx * (road_width / 2)
-            right_y = y - ny * (road_width / 2)
-
-            vertices.append((left_x, left_y, z + 0.05))
-            vertices.append((right_x, right_y, z + 0.05))
-
-        faces = []
-        for i in range(len(vertices) // 2 - 1):
-            idx = i * 2
-            faces.append((idx, idx + 1, idx + 3))
-            faces.append((idx, idx + 3, idx + 2))
-
-        package_share_dir = get_package_share_directory("forest_map_generator")
-        road_mesh_dir = os.path.join(package_share_dir, "models", "road", "meshes")
-        road_stl_path = os.path.join(road_mesh_dir, "road.stl")
-
-        road_mesh = mesh.Mesh(np.zeros(len(faces), dtype=mesh.Mesh.dtype))
-        for i, face in enumerate(faces):
-            for j in range(3):
-                road_mesh.vectors[i][j] = vertices[face[j]]
-
-        road_mesh.save(road_stl_path)
-        self.get_logger().info(f"Road mesh saved to: {road_stl_path}")
-
-        road_xml = """
-        <!-- Auto-generated smooth road -->
-        <include>
-            <uri>model://road</uri>
-            <name>generated_road</name>
-            <pose>0 0 0 0 0 0</pose>
-        </include>
-        <!-- End auto-generated smooth road -->
-        """
-
-        return road_xml
-
-    def generate_roads(self):
-        self.get_logger().info("Road generation started")
-
-        start_world, end_world = self.find_start_end()
-        if start_world is None or end_world is None:
-            self.get_logger().error(
-                "Road generation failed: could not find valid start and end points."
-            )
-            return ""
-
-        path_world = self.astar_path_planning(start_world, end_world)
-        if not path_world or len(path_world) < 2:
-            self.get_logger().error(
-                "Road generation failed: could not find valid path."
-            )
-            return ""
-
-        road_xml = self.generate_road_xml(path_world)
-        self.get_logger().info(
-            "Road generation completed (path points: %d)" % len(path_world)
-        )
-
-        return road_xml
-
-
 # Main node
 class ForestMapGenerator(Node):
     def __init__(self):
         super().__init__("forest_map_generator")
         self.get_logger().info("Forest Map Generator Node started.")
 
-        self.declare_parameter("heightmap_file", "heightmap.png")
         self.declare_parameter("num_trees", 50)
         self.declare_parameter("tree_types", ["oak_tree", "pine_tree"])
-        self.declare_parameter("terrain_size_x", 257)
-        self.declare_parameter("terrain_size_y", 257)
-        self.declare_parameter("terrain_size_z", 50)
         self.declare_parameter("min_tree_distance", 5.0)
         self.declare_parameter("max_slope", 30.0)
-        self.declare_parameter("output_world_file", "world_with_trees_roads.world")
-        self.declare_parameter("road_length", 100)
-        self.declare_parameter("road_width", 1.0)
-        self.declare_parameter("road_min_tree_dist", 3.0)
+        self.declare_parameter("output_world_file", "world_with_trees.world")
+        self.declare_parameter("plant_tree_above_dirt", False)
 
-        self.heightmap_file = self.get_parameter("heightmap_file").value
         self.num_trees = self.get_parameter("num_trees").value
         self.tree_types = self.get_parameter("tree_types").value
-        self.terrain_size_x = self.get_parameter("terrain_size_x").value
-        self.terrain_size_y = self.get_parameter("terrain_size_y").value
-        self.terrain_size_z = self.get_parameter("terrain_size_z").value
         self.min_tree_distance = self.get_parameter("min_tree_distance").value
         self.max_slope = self.get_parameter("max_slope").value
         self.output_world_file = self.get_parameter("output_world_file").value
-        self.road_length = self.get_parameter("road_length").value
-        self.road_width = self.get_parameter("road_width").value
-        self.road_min_tree_dist = self.get_parameter("road_min_tree_dist").value
+        self.plant_tree_above_dirt = self.get_parameter("plant_tree_above_dirt").value
 
         self.package_path = get_package_share_directory("forest_map_generator")
 
         self.tree_generator = TreeGenerator(self)
-        self.road_generator = None
 
         self.run_generation()
 
-    def generate_final_world_file(self, trees_xml, roads_xml):
+    def generate_final_world_file(self, trees_xml):
         original_world_path = os.path.join(self.package_path, "worlds", "world.world")
         output_world_path = os.path.join(
             self.package_path, "worlds", self.output_world_file
         )
-
         try:
             with open(original_world_path, "r") as f:
                 world_content = f.read()
@@ -466,7 +343,7 @@ class ForestMapGenerator(Node):
             self.get_logger().error(f"Failed to read world file: {e}")
             return False
 
-        combined_xml = roads_xml + trees_xml
+        combined_xml = trees_xml
 
         if "</world>" in world_content:
             new_world_content = world_content.replace(
@@ -489,14 +366,8 @@ class ForestMapGenerator(Node):
         trees = self.tree_generator.generate_trees()
         trees_xml = self.tree_generator.generate_trees_xml(trees) if trees else ""
 
-        self.road_generator = RoadGenerator(self, trees)
-        roads_xml = self.road_generator.generate_roads()
-
-        if self.generate_final_world_file(trees_xml, roads_xml):
+        if self.generate_final_world_file(trees_xml):
             self.get_logger().info("Generation completed successfully!")
-            self.get_logger().info(
-                f"Launch command: ros2 launch forest_map_generator gazebo.launch.py"
-            )
         else:
             self.get_logger().error("Generation failed!")
 
@@ -504,7 +375,7 @@ class ForestMapGenerator(Node):
 def main():
     rclpy.init()
     node = ForestMapGenerator()
-    rclpy.spin(node)
+    rclpy.spin_once(node, timeout_sec=1)
     node.destroy_node()
     rclpy.shutdown()
 

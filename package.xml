@@ -7,15 +7,11 @@
   <maintainer email="xintong.jiang@unb.ca">Xintong Jiang</maintainer>
   <license>Apache License 2.0</license>
 
-  <!-- ament_python -->
-  <buildtool_depend>ament_python</buildtool_depend>
-
   <!-- Python dependencies -->
   <depend>rclpy</depend>
   <depend>python3-opencv</depend>
   <depend>python3-numpy</depend>
   <depend>python3-pil</depend>
-  <depend>ros_ign_gazebo</depend>
   <depend>gazebo_msgs</depend>
 
   <test_depend>ament_copyright</test_depend>

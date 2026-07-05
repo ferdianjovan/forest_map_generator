@@ -24,15 +24,15 @@
               <size>10</size>
             </texture>
             <blend>
-              <min_height>1.0</min_height>
-              <fade_dist>3.0</fade_dist>
+              <min_height>35.0</min_height>
+              <fade_dist>5.0</fade_dist>
             </blend>
             <blend>
-              <min_height>10.0</min_height>
-              <fade_dist>3.0</fade_dist>
+              <min_height>50.0</min_height>
+              <fade_dist>5.0</fade_dist>
             </blend>
-            <uri>model://terrain/materials/textures/heightmap.png</uri>
-            <size>257 257 50.0</size>
+            <uri>model://terrain/materials/textures/lintrathen_loch.png</uri>
+            <size>513 513 75.0</size>
             <pos>0.0 0.0 0.0</pos>
           </heightmap>
         </geometry>
@@ -42,10 +42,10 @@
           <heightmap>
             <use_terrain_paging>false</use_terrain_paging>
             <sampling>1 1</sampling>
-            <uri>model://terrain/materials/textures/heightmap.png</uri>
-            <size>257 257 50.0</size>
+            <uri>model://terrain/materials/textures/lintrathen_loch.png</uri>
+            <size>513 513 75.0</size>
             <pos>0.0 0.0 0.0</pos>
-          <blend><min_height>1.0</min_height><fade_dist>3.0</fade_dist></blend><blend><min_height>10.0</min_height><fade_dist>3.0</fade_dist></blend></heightmap>
+          <blend><min_height>35.0</min_height><fade_dist>5.0</fade_dist></blend><blend><min_height>50.0</min_height><fade_dist>5.0</fade_dist></blend></heightmap>
         </geometry>
         <surface>
           <friction>

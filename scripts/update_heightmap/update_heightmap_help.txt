@@ -1,5 +1,5 @@
 Usage example:
-python3 update_terrain.py --heightmap heightmap.png --height_range 50 --blend1_min 1 --blend1_fade 3 --blend2_min 10 --blend2_fade 3 --pos_x 0 --pos_y 0 --pos_z 0
+python3 main.py --heightmap heightmap.png --height_range 50 --blend1_min 1 --blend1_fade 3 --blend2_min 10 --blend2_fade 3 --pos_x 0 --pos_y 0 --pos_z 0
 
 Parameters:
 --heightmap: Heightmap image file name.

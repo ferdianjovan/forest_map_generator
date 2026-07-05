@@ -1,7 +1,7 @@
 # forest_map_generator (ROS2 Humble + Gazebo Fortress)
 
 A ROS 2 package for generating forest simulation environments in Gazebo Fortress, including
-terrain heightmaps, procedural tree placement, and road mesh generation.
+terrain heightmaps, procedural tree placement.
 
 <p align="center">
   <img src="docs/images/gazebo_overview.png" width="850">
@@ -41,9 +41,6 @@ The core workflow is:
    - Convert or export the heightmap as a single-channel (grayscale) PNG.
    - Ensure the heightmap is square and follows Gazebo heightmap requirements (`N × N`, where `N = 2^k + 1`).
    - Use 8-bit grayscale (`0–255`) unless a higher bit-depth workflow is explicitly required.
-   - Set `terrain_size_x` and `terrain_size_y` to match the actual heightmap resolution.  
-     These values are automatically reported during heightmap loading and terrain/SDF update,
-     and can be verified from the printed image dimensions in the console output.
 
 3) **Update the terrain model**
    - `scripts/update_heightmap/main.py` updates `models/terrain/model.sdf`, including:
@@ -155,16 +152,12 @@ The node writes a generated world file to the package worlds/ directory (see out
 
 | Parameter | Type | Description |
 |----------|------|-------------|
-| `heightmap_file` | `string` | Heightmap image filename under `models/terrain/heightmaps/`. Used for terrain elevation lookup and slope computation. |
 | `num_trees` | `int` | Number of trees to generate and inject into the world. |
 | `tree_types` | `list[string]` | List of Gazebo model names available under `models/` (e.g., `tree1`–`tree14`). A random type is selected per placement. |
-| `terrain_size_x` | `int` | Heightmap resolution in X (pixels). Must match the heightmap image width. |
-| `terrain_size_y` | `int` | Heightmap resolution in Y (pixels). Must match the heightmap image height. |
-| `terrain_size_z` | `float` | Terrain vertical scale in meters used to convert heightmap values to world Z. |
 | `min_tree_distance` | `float` | Minimum allowed distance (meters) between any two trees. |
 | `max_slope` | `float` | Maximum allowed slope (degrees) for valid placements. Trees are rejected on steep terrain. |
 | `output_world_file` | `string` | Output world filename written to `worlds/` (e.g., `world_with_trees.world`). |
-
+| `plant_tree_above_dirt` | `bool`         | Only allow to put trees in the second blend layer or above (1st Layer Dirt, 2nd Layer Grass, and 3rd Highest Layer Fungi. This corresponds to the `--blend1_min` + `--blend1_fade` height from the **update_heightmap script** |
 Note: Several of the parameters above are automatically printed during heightmap loading and SDF update for verification and reproducibility.  
 These outputs will be explained in detail in a later section.
 
@@ -194,17 +187,14 @@ Node(
     output="screen",
     parameters=[
         {
-            "heightmap_file": "heightmap.png",
             "num_trees": 200,
             "tree_types": [
                 "tree1","tree2","tree3","tree4","tree5","tree6","tree7",
                 "tree8","tree9","tree10","tree11","tree12","tree13","tree14",
             ],
-            "terrain_size_x": 257,
-            "terrain_size_y": 257,
-            "terrain_size_z": 50,
             "min_tree_distance": 5.0,
             "max_slope": 30.0,
+            "plant_tree_above_dirt": True,
             "output_world_file": "world_with_trees.world",
         }
     ],
@@ -250,7 +240,7 @@ By centralizing these operations, `TerrainHelper` ensures that terrain assumptio
   - Enforces a maximum allowable slope (`max_slope`) for placement validity
 
 - **Coordinate conversion**
-  - Maps heightmap pixel coordinates `(px, py)` to Gazebo world coordinates `(x, y, z)`
+  - Maps heightmap pixel coordinates `(px, py)` to Gazebo world coordinates `(x, y, z)`. `(px, py)` are usually the same value as `(x, y)`.
   - Converts world-frame coordinates back to heightmap pixels
   - Maintains a consistent terrain reference frame shared by all generators
 
@@ -265,9 +255,7 @@ By centralizing these operations, `TerrainHelper` ensures that terrain assumptio
 
 **Design Notes**
 
-- Terrain dimensions and scaling are explicitly parameterized using:
-  - `terrain_size_x`, `terrain_size_y` — heightmap resolution
-  - `terrain_size_z` — vertical scale in meters
+- Terrain dimensions and scaling: `terrain_size_x`, `terrain_size_y`, `terrain_size_z` are taken from the model.sdf model for the terrain (saved under models/terrain/materials in the shared--install--folder, or under the same folder structure in the package). These dimensions are then compared with the .png file described inside the model.sdf. It is usually that the x and y dimensions are the same, while the z dimensions can be different. Please refer to **update_heightmap script** to know the z-dimension calculation.
 - All slope checks for trees and roads rely on the same slope computation logic.
 - Boundary regions of the heightmap are conservatively rejected to avoid invalid gradient estimates.
 
@@ -283,7 +271,7 @@ This design avoids duplicated terrain logic and ensures that all procedural elem
 **Assumptions**
 
 - The heightmap is a single-channel (grayscale) PNG compatible with Gazebo heightmap terrain models.
-- Heightmap resolution matches `terrain_size_x × terrain_size_y`.
+- Heightmap resolution matches `terrain_size_x × terrain_size_y` described at the model.sdf (with the .png file described inside the model.sdf).
 - The terrain model is centered at the world origin with symmetric extents.
 
 
@@ -299,19 +287,15 @@ TreeGenerator is responsible for procedural tree placement on the terrain height
 
 **Inputs (ROS 2 Parameters)**
 
-| Parameter | Type | Description |
-|----------|------|-------------|
-| `num_trees` | `int` | Number of tree instances to place. |
-| `tree_types` | `list[string]` | List of Gazebo model names under models/ (e.g., oak_tree, pine_tree). A random type is selected per placement. |
-| `min_tree_distance` | `float` | Minimum spacing constraint between any two placed trees. |
-| `max_slope` | `float` | Maximum allowable terrain slope in degrees. Candidate points with slope >= max_slope will be rejected. |
-| `heightmap_file` | `string` | Heightmap image filename under models/terrain/heightmaps/. Used for elevation lookup and slope evaluation. |
-| `terrain_size_x` | `int` | Heightmap resolution in X (pixels). |
-| `terrain_size_y` | `int` | Heightmap resolution in Y (pixels). |
-| `terrain_size_z` | `float` | Terrain vertical scale used to map heightmap values into world-frame Z. |
-
+| Parameter | Type           | Description                                                                                                                                                                                                                    |
+|----------|----------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `num_trees` | `int`          | Number of tree instances to place.                                                                                                                                                                                             |
+| `tree_types` | `list[string]` | List of Gazebo model names under models/ (e.g., oak_tree, pine_tree). A random type is selected per placement.                                                                                                                 |
+| `min_tree_distance` | `float`        | Minimum spacing constraint between any two placed trees.                                                                                                                                                                       |
+| `max_slope` | `float`        | Maximum allowable terrain slope in degrees. Candidate points with slope >= max_slope will be rejected.                                                                                                                         |
+| `plant_tree_above_dirt` | `bool`         | Only allow to put trees in the second blend layer or above (1st Layer Dirt, 2nd Layer Grass, and 3rd Highest Layer Fungi. This corresponds to the `--blend1_min` + `--blend1_fade` height from the **update_heightmap script** |
 **Execution Flow**
-1) Load the heightmap as a grayscale image and convert it to float32
+1) Load the heightmap as a grayscale image and convert it to float32 (taken this from the url available at the models/terrain/materials/model.sdf in the share folder)
 2) Randomly sample candidate pixel coordinates (px, py)
 3) Validate each candidate using boundary margin checks, local slope check, and minimum distance constraint to previously placed trees
 4) Convert accepted pixel coordinates into world coordinates (x, y, z)
@@ -355,69 +339,7 @@ To customize the tree generation logic, the recommended approach is to modify or
 
 ### 4. RoadGenerator (Road Mesh + Simple Path Planning)
 
-**Location**
-```text
-forest_map_generator/forest_map_generator.py
-```
-
-**Role**
-RoadGenerator generates a smooth road mesh (`road.stl`) and injects a road `<include>` block into the output `.world` file. It evaluates road endpoints and the resulting path directly on the terrain heightmap, reusing `TerrainHelper` for slope checks and coordinate conversion.
-
-**Main Parameters**
-- **road_length** (float): target road length in meters used when selecting endpoints
-- **road_width** (float): road mesh width in meters
-- **road_min_tree_dist** (float): minimum clearance from any generated tree (world-frame distance)
-- **max_slope** (float): maximum allowable slope (deg) for road samples
-
-**Execution Flow**
-1) Convert generated trees from pixel coordinates to world-frame `XY` for clearance checks
-2) Sample candidate road endpoints in world coordinates and filter by slope and tree clearance
-3) Select a best endpoint pair whose distance is closest to `road_length`
-4) Generate a path between endpoints using a simple line-based sampling strategy
-5) Expand the path into a ribbon mesh, triangulate it, and save as `STL`
-6) Return a road `<include>` XML block for insertion into the generated world
-
-**Key Methods**
-
-| Method | Description |
-|------|-------------|
-| `generate_roads()` | Orchestrates endpoint selection, path generation, mesh export, and returns the road injection XML. |
-| `find_start_end()` | Samples endpoint candidates in world coordinates, filters by slope and tree clearance, and selects the pair closest to `road_length`. |
-| `bresenham_line(x0, y0, x1, y1)` | Produces integer pixel coordinates along a straight line between start and end pixels. |
-| `astar_path_planning(start, end)` | Current implementation uses a straight-line sample set and filters points by slope and tree clearance, then converts accepted pixels into world-frame points. |
-| `generate_road_xml(path_world)` | Builds a simple ribbon mesh from `path_world`, saves `models/road/meshes/road.stl`, and returns the Gazebo road `<include>` block. |
-
-**Output**
-- Road mesh:
-```text
-models/road/meshes/road.stl
-```
-
-- World injection:
-```text
-<include>
-  <uri>model://road</uri>
-  <name>generated_road</name>
-  <pose>0 0 0 0 0 0</pose>
-</include>
-```
-
-**Planned Improvements**
-RoadGenerator currently uses a simplified straight-line sampling approach for path generation and a minimal ribbon mesh construction. Future work is planned in two areas:
-
-1) **Road mesh / model fidelity**
-- add thickness and collision-friendly geometry
-- add UVs and textures for visual realism
-- smoother curvature control and better handling of sharp turns
-- optional elevation smoothing to reduce road waviness on rough terrain
-
-2) **Path planning algorithm**
-- replace the current line-filtering approach with a real grid-based `A*` (or `Dijkstra`) using:
-  - slope cost
-  - distance-to-tree cost
-  - optional obstacle masks
-- improve continuity by post-smoothing the path (e.g., spline fitting) while maintaining constraints
-
+RoadGenerator **is removed** in this package.
 
 ### 5. update_heightmap script (Heightmap → Terrain SDF Update)
 
@@ -480,7 +402,7 @@ models/terrain/model.sdf.bak_<YYYYMMDD_HHMMSS>
 **Notes**
 - The script edits every `<heightmap>` block found in the SDF (supports multiple occurrences).
 - The script prints the final computed `uri`, `size`, `pos`, and copy destination for verification before writing.
-
+- Make sure to recompile this package with ROS to ensure the heightmap (and/or other resources in terrain folder) is copied to the share directory (i.e. install/forest_map_generator/share/forest_map_generator/models/terrain)
 
 ### 6. ply_to_gazebo_textured pipeline (PLY → Gazebo Tree Model)
 
