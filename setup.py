@@ -32,6 +32,27 @@ setup(
             ["models/road/model.config", "models/road/model.sdf"],
         ),
         ("share/" + package_name + "/models/road/meshes", glob("models/road/meshes/*")),
+        (
+            "share/" + package_name + "/models/fog_generator/materials/textures",
+            glob("models/fog_generator/materials/textures/*.png"),
+        ),
+        (
+            "share/" + package_name + "/models/fog_generator",
+            ["models/fog_generator/model.config", "models/fog_generator/model.sdf"],
+        ),
+        (
+            "share/" + package_name + "/models/fire_model/materials/textures",
+            glob("models/fire_model/materials/textures/*.png")
+            + glob("models/fire_model/materials/textures/*.jpg"),
+        ),
+        (
+            "share/" + package_name + "/models/fire_model/meshes",
+            glob("models/fire_model/meshes/*.dae"),
+        ),
+        (
+            "share/" + package_name + "/models/fire_model",
+            ["models/fire_model/model.config", "models/fire_model/model.sdf"],
+        ),
         ("share/" + package_name + "/launch", glob("launch/*.launch.py")),
         ("share/" + package_name + "/scripts", glob("scripts/*.py")),
         (

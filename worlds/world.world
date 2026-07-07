@@ -16,6 +16,11 @@
       <background>0.7 0.7 0.9 1</background>
       <shadows>true</shadows>
     </scene>
+
+    <atmosphere type="adiabatic">
+      <temperature>300</temperature>
+      <temperature_gradient>0.01</temperature_gradient>
+    </atmosphere>
     
   </world>
 </sdf>

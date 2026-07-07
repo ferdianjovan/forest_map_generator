@@ -55,8 +55,7 @@ The core workflow is:
 4) **Generate the forest world**
    - `forest_map_generator/forest_map_generator.py` (ROS 2 node) generates a new `.world` file by inserting:
      - randomly placed tree `<include>` blocks (slope-aware and minimum-distance constrained)
-     - an automatically generated road mesh (`models/road/meshes/road.stl`) and the corresponding road `<include>`
-   - Tree and road placement are evaluated directly on the heightmap using shared terrain logic.
+   - Tree is evaluated directly on the heightmap using shared terrain logic.
 
 5) **Create Gazebo-ready tree models from point clouds (optional)**
    - `scripts/ply_to_gazebo_textured/main.py` converts colored `.ply` point clouds into Gazebo-ready tree models under `models/<tree_name>/`, including:
@@ -150,14 +149,14 @@ The node writes a generated world file to the package worlds/ directory (see out
 
 **Parameters**
 
-| Parameter | Type | Description |
-|----------|------|-------------|
-| `num_trees` | `int` | Number of trees to generate and inject into the world. |
-| `tree_types` | `list[string]` | List of Gazebo model names available under `models/` (e.g., `tree1`–`tree14`). A random type is selected per placement. |
-| `min_tree_distance` | `float` | Minimum allowed distance (meters) between any two trees. |
-| `max_slope` | `float` | Maximum allowed slope (degrees) for valid placements. Trees are rejected on steep terrain. |
-| `output_world_file` | `string` | Output world filename written to `worlds/` (e.g., `world_with_trees.world`). |
-| `plant_tree_above_dirt` | `bool`         | Only allow to put trees in the second blend layer or above (1st Layer Dirt, 2nd Layer Grass, and 3rd Highest Layer Fungi. This corresponds to the `--blend1_min` + `--blend1_fade` height from the **update_heightmap script** |
+| Parameter | Type | Description                                                                                                                                                                                                                     |
+|----------|------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `num_trees` | `int` | Number of trees to generate and inject into the world.                                                                                                                                                                          |
+| `tree_types` | `list[string]` | List of Gazebo model names available under `models/` (e.g., `tree1`–`tree14`). A random type is selected per placement.                                                                                                         |
+| `min_tree_distance` | `float` | Minimum allowed distance (meters) between any two trees.                                                                                                                                                                        |
+| `max_slope` | `float` | Maximum allowed slope (degrees) for valid placements. Trees are rejected on steep terrain.                                                                                                                                      |
+| `output_world_file` | `string` | Output world filename written to `worlds/` (e.g., `world_with_trees.world`).                                                                                                                                                    |
+| `plant_tree_above_dirt` | `bool`         | Only allow to put trees in the second blend layer or above (1st Layer Dirt, 2nd Layer Grass, and 3rd Highest Layer Fungi). This corresponds to the `--blend1_min` + `--blend1_fade` height from the **update_heightmap script** |
 Note: Several of the parameters above are automatically printed during heightmap loading and SDF update for verification and reproducibility.  
 These outputs will be explained in detail in a later section.
 
