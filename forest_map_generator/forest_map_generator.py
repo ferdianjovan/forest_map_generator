@@ -372,6 +372,9 @@ class FireGenerator(TerrainHelper):
                 <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"></plugin>
                 <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"></plugin>
                 <plugin filename="gz-sim-particle-emitter-system" name="gz::sim::systems::ParticleEmitter"></plugin>
+                <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+                  <render_engine>ogre2</render_engine>
+                </plugin>
             """
         )
 

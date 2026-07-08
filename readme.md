@@ -1,7 +1,7 @@
 # forest_map_generator (ROS2 Humble + Gazebo Fortress)
 
 A ROS 2 package for generating forest simulation environments in Gazebo Fortress, including
-terrain heightmaps, procedural tree placement.
+terrain heightmaps, procedural tree placement, and fire/smoke generation.
 
 <p align="center">
   <img src="docs/images/gazebo_overview.png" width="850">
@@ -18,7 +18,7 @@ terrain heightmaps, procedural tree placement.
   - [1. ForestMapGenerator (ROS 2 Node)](#1-forestmapgenerator-ros-2-node)
   - [2. TerrainHelper (Terrain Abstraction Layer)](#2-terrainhelper-terrain-abstraction-layer)
   - [3. TreeGenerator](#3-treegenerator)
-  - [4. RoadGenerator (Road Mesh + Simple Path Planning)](#4-roadgenerator-road-mesh--simple-path-planning)
+  - [4. FireGenerator (Fire Model + Smoke Particle Emitters)](#4-firegenerator-fire-model--smoke-particle-emitters)
   - [5. update_heightmap script (Heightmap → Terrain SDF Update)](#5-update_heightmap-script-heightmap--terrain-sdf-update)
   - [6. ply_to_gazebo_textured pipeline (PLY → Gazebo Tree Model)](#6-ply_to_gazebo_textured-pipeline-ply--gazebo-tree-model)
 
@@ -28,7 +28,8 @@ terrain heightmaps, procedural tree placement.
 
 This project provides a complete pipeline to build a forest scene for Gazebo from:
 1) a terrain heightmap (PNG) used by the `terrain` model, and  
-2) tree assets (either built-in models such as `oak_tree` / `pine_tree`, or textured meshes generated from point clouds).
+2) tree assets (either built-in models such as `oak_tree` / `pine_tree`, or textured meshes generated from point clouds), and
+3) fire assets represented by visible `fire_model` instances and `fog_generator` smoke particle emitters.
 
 The core workflow is:
 
@@ -55,7 +56,8 @@ The core workflow is:
 4) **Generate the forest world**
    - `forest_map_generator/forest_map_generator.py` (ROS 2 node) generates a new `.world` file by inserting:
      - randomly placed tree `<include>` blocks (slope-aware and minimum-distance constrained)
-   - Tree is evaluated directly on the heightmap using shared terrain logic.
+     - randomly placed fire/smoke blocks using `fire_model` and `fog_generator`
+   - Trees and fires are evaluated directly on the heightmap using shared terrain logic.
 
 5) **Create Gazebo-ready tree models from point clouds (optional)**
    - `scripts/ply_to_gazebo_textured/main.py` converts colored `.ply` point clouds into Gazebo-ready tree models under `models/<tree_name>/`, including:
@@ -76,7 +78,7 @@ The package is structured as an `ament_python` ROS 2 package and is intended for
 ```text
 forest_map_generator/
 ├── forest_map_generator/
-│   └── forest_map_generator.py        # ROS 2 node (tree & road generation)
+│   └── forest_map_generator.py        # ROS 2 node (tree & fire generation)
 │
 ├── scripts/
 │   ├── update_heightmap/
@@ -88,7 +90,8 @@ forest_map_generator/
 │
 ├── models/
 │   ├── terrain/                       # Heightmap-based terrain model
-│   ├── road/                          # Generated road model
+│   ├── fog_generator/                 # Smoke/fog particle textures and color ranges
+│   ├── fire_model/                    # Visual fire model placed inside smoke areas
 │   ├── oak_tree/                      # Predefined tree model
 │   ├── pine_tree/                     # Predefined tree model
 │   └── tree*/                         # Auto-generated tree instances
@@ -110,13 +113,13 @@ forest_map_generator/
 
 ## Key Components
 
-- 'ForestMapGenerator (ROS 2 node)': generates a new world file by injecting trees and roads into a base world.
+- 'ForestMapGenerator (ROS 2 node)': generates a new world file by injecting trees, fire models, and smoke particle emitters into a base world.
 
 - 'TerrainHelper': shared utility class for heightmap loading, pixel–world coordinate conversion, and terrain slope computation.
 
 - 'TreeGenerator': slope-aware random tree placement on the heightmap, built on top of TerrainHelper.
 
-- 'RoadGenerator': generates a smooth road mesh (road.stl) while respecting terrain slope and minimum clearance from trees.
+- 'FireGenerator': random fire placement on the heightmap, built on top of TerrainHelper. Each fire combines a smoke particle emitter (`fog_generator`) with one or more visible flame models (`fire_model`).
 
 - 'update_heightmap script': updates terrain SDF parameters and ensures the heightmap image is placed in the correct model path for Gazebo.
 
@@ -131,14 +134,15 @@ forest_map_generator/forest_map_generator.py
 
 **Role**
 
-Primary ROS 2 node that procedurally generates a forest simulation world by injecting trees (and optionally roads) into a base Gazebo world.
+Primary ROS 2 node that procedurally generates a forest simulation world by injecting trees, fire models, and smoke particle emitters into a base Gazebo world.
 The node samples valid placements directly on the terrain heightmap, converts heightmap pixels into world-frame poses, and writes a new .world file under worlds/.
 
 **Execution Flow**
 1. Load the terrain heightmap and compute local slope information
 2. Sample valid tree positions subject to slope and distance constraints
-3. Convert heightmap pixels to world-frame poses
-4. Inject generated tree instances into a new Gazebo world file
+3. Sample valid fire positions subject to minimum distance and optional dirt-layer constraints
+4. Convert heightmap pixels to world-frame poses
+5. Inject generated tree instances, fire model includes, smoke particle emitters, and required Gazebo particle plugins into a new Gazebo world file
 
 **Launch Command**
 ```text
@@ -157,6 +161,12 @@ The node writes a generated world file to the package worlds/ directory (see out
 | `max_slope` | `float` | Maximum allowed slope (degrees) for valid placements. Trees are rejected on steep terrain.                                                                                                                                      |
 | `output_world_file` | `string` | Output world filename written to `worlds/` (e.g., `world_with_trees.world`).                                                                                                                                                    |
 | `plant_tree_above_dirt` | `bool`         | Only allow to put trees in the second blend layer or above (1st Layer Dirt, 2nd Layer Grass, and 3rd Highest Layer Fungi). This corresponds to the `--blend1_min` + `--blend1_fade` height from the **update_heightmap script** |
+| `num_fires` | `int` | Number of fire/smoke areas to generate and inject into the world. |
+| `min_fire_distance` | `float` | Minimum spacing constraint between generated fire/smoke placement centers. |
+| `plant_fire_above_dirt` | `bool` | Only allow fires in the second blend layer or above, using the same dirt-layer threshold logic as `plant_tree_above_dirt`. |
+| `min_fire_size` | `float` | Minimum square smoke emitter size. Default: `2.0`. Values are clamped to the supported fire-size range. |
+| `max_fire_size` | `float` | Maximum square smoke emitter size. Default: `10.0`. Values are clamped to the supported fire-size range. |
+
 Note: Several of the parameters above are automatically printed during heightmap loading and SDF update for verification and reproducibility.  
 These outputs will be explained in detail in a later section.
 
@@ -169,13 +179,20 @@ What is written into the world
 
 - A list of Gazebo `<include>` blocks, one per generated tree instance
 
-- Each instance includes a randomized yaw for visual diversity
+- A list of Gazebo `<include>` blocks, one or more per generated fire area, for `fire_model`
+
+- A list of Gazebo `fire_smoke_<id>` particle emitter models for smoke/fog
+
+- Randomized yaw for visual diversity on trees and fire models
 
 - Tree placement is slope-aware and respects minimum spacing constraints
+
+- Fire placement respects minimum spacing and optional dirt-layer constraints, but does not reject steep slopes
 
 **Assumptions**
 - The terrain model and heightmap are pre-loaded in Gazebo
 - All tree models listed in `tree_types` exist under `models/`
+- `fog_generator` and `fire_model` exist under `models/` and are installed by the package
 
 **Example Launch Parameters**
 ```text
@@ -194,6 +211,11 @@ Node(
             "min_tree_distance": 5.0,
             "max_slope": 30.0,
             "plant_tree_above_dirt": True,
+            "num_fires": 5,
+            "min_fire_distance": 5.0,
+            "plant_fire_above_dirt": False,
+            "min_fire_size": 2.0,
+            "max_fire_size": 10.0,
             "output_world_file": "world_with_trees.world",
         }
     ],
@@ -201,7 +223,7 @@ Node(
 ```
 
 **Reproducibility**  
-For fixed parameters and heightmap input, the generation process is stochastic due to randomized tree placement, orientation, and type selection.  
+For fixed parameters and heightmap input, the generation process is stochastic due to randomized tree placement, tree orientation, tree type selection, fire placement, smoke size, smoke color range, and fire model placement.  
 A fixed random seed is planned to be introduced to enable reproducible map generation for benchmarking and evaluation.
 
 ### 2. TerrainHelper (Terrain Abstraction Layer)
@@ -215,7 +237,7 @@ forest_map_generator/forest_map_generator.py
 
 `TerrainHelper` is a shared utility class that encapsulates all terrain-related operations, providing a consistent abstraction over the heightmap-based terrain model used in Gazebo.
 
-It serves as the geometric and physical foundation for both tree and road generation by:
+It serves as the geometric and physical foundation for both tree and fire generation by:
 
 - loading and validating the terrain heightmap,
 
@@ -255,7 +277,7 @@ By centralizing these operations, `TerrainHelper` ensures that terrain assumptio
 **Design Notes**
 
 - Terrain dimensions and scaling: `terrain_size_x`, `terrain_size_y`, `terrain_size_z` are taken from the model.sdf model for the terrain (saved under models/terrain/materials in the shared--install--folder, or under the same folder structure in the package). These dimensions are then compared with the .png file described inside the model.sdf. It is usually that the x and y dimensions are the same, while the z dimensions can be different. Please refer to **update_heightmap script** to know the z-dimension calculation.
-- All slope checks for trees and roads rely on the same slope computation logic.
+- Tree slope checks and fire ground-height lookup rely on the same terrain conversion logic.
 - Boundary regions of the heightmap are conservatively rejected to avoid invalid gradient estimates.
 
 **Consumers**
@@ -263,7 +285,7 @@ By centralizing these operations, `TerrainHelper` ensures that terrain assumptio
 `TerrainHelper` is inherited by:
 
 - `TreeGenerator` — for slope-aware tree placement and pixel-to-world coordinate conversion
-- `RoadGenerator` — for slope-constrained path planning and road mesh generation
+- `FireGenerator` — for fire/smoke placement, fire model ground alignment, and particle emitter pose generation
 
 This design avoids duplicated terrain logic and ensures that all procedural elements are generated under identical terrain constraints.
 
@@ -336,9 +358,146 @@ To customize the tree generation logic, the recommended approach is to modify or
 - Example: weighted tree type sampling, fixed yaw, custom naming rules
 
 
-### 4. RoadGenerator (Road Mesh + Simple Path Planning)
+### 4. FireGenerator (Fire Model + Smoke Particle Emitters)
 
-RoadGenerator **is removed** in this package.
+**Location**
+```text
+forest_map_generator/forest_map_generator.py
+```
+
+**Role**
+FireGenerator is responsible for procedural fire placement on the terrain heightmap and generating the Gazebo XML used to represent each fire. It inherits `TerrainHelper` so that fire and smoke placement uses the same heightmap loading, pixel-to-world conversion, and terrain height lookup as tree placement.
+
+Each generated fire area is represented by two parts:
+
+- `fog_generator`: a Gazebo particle emitter that renders smoke/fog using `fog.png` as the particle texture.
+- `fire_model`: one or more visual flame models placed randomly inside the smoke area.
+
+The fire placement logic does not check slope. Fires can be generated on any terrain slope, but the `fire_model` pose is corrected using the terrain height at its own `(x, y)` position so the visible flame sits above the local ground instead of reusing the smoke center altitude.
+
+**Inputs (ROS 2 Parameters)**
+
+| Parameter | Type | Description |
+|----------|------|-------------|
+| `num_fires` | `int` | Number of fire/smoke areas to place. Default: `5`. |
+| `min_fire_distance` | `float` | Minimum spacing constraint between generated fire/smoke placement centers. |
+| `plant_fire_above_dirt` | `bool` | If `true`, fires are only placed in the second blend layer or above. This uses the same dirt threshold derived from `--blend1_min` + `--blend1_fade` in the **update_heightmap script**. Default: `False`. |
+| `min_fire_size` | `float` | Minimum square smoke emitter size used for `<size>x x 0</size>`. Default: `2.0`. The supported lower limit is `1.0`. |
+| `max_fire_size` | `float` | Maximum square smoke emitter size used for `<size>x x 0</size>`. Default: `10.0`. The supported upper limit is `50.0`. |
+
+**Execution Flow**
+1) Load the heightmap through `TerrainHelper`
+2) Randomly sample candidate pixel coordinates `(px, py)`
+3) Reject candidates outside the heightmap boundary margin
+4) Reject candidates that violate `plant_fire_above_dirt`, if enabled
+5) Reject candidates that violate `min_fire_distance`
+6) Convert accepted fire centers to world coordinates `(x, y, z)`
+7) Randomly choose a square smoke size between `min_fire_size` and `max_fire_size`
+8) Randomly choose either `fogcolors.png` or `smokecolors.png` for the particle color range
+9) Generate one smoke particle emitter named `fire_smoke_<id>`
+10) Generate one or more `fire_model_<fire_id>_<model_id>` includes randomly inside the smoke area
+11) Inject the Gazebo particle emitter plugin into the output world when fire XML is generated
+
+**Smoke Particle Emitter**
+
+Each smoke area is written as a Gazebo `<model>` with a `<particle_emitter name="emitter" type="box">`. The smoke area is square:
+
+```xml
+<size>{fire_size} {fire_size} 0</size>
+```
+
+The particle material uses:
+
+```xml
+<albedo_map>model://fog_generator/materials/textures/fog.png</albedo_map>
+```
+
+The color range image is selected randomly per fire from:
+
+```text
+models/fog_generator/materials/textures/fogcolors.png
+models/fog_generator/materials/textures/smokecolors.png
+```
+
+The generated world uses the resolved installed model path for the color range image because Gazebo's particle emitter can fail to resolve `model://` paths for `<color_range_image>` even when the same path works for material textures.
+
+**Size-Dependent Particle Parameters**
+
+`min_fire_size` and `max_fire_size` define the random smoke size range. The selected `fire_size` is clamped to the supported range `1.0` to `50.0`, and the following particle parameters are interpolated linearly from small fires to large fires:
+
+| Particle Parameter | Value at size `1.0` | Value at size `50.0` |
+|--------------------|---------------------|----------------------|
+| `lifetime` | `5.0` | `20.0` |
+| `min_velocity` | `0.1` | `1.0` |
+| `max_velocity` | `0.2` | `3.0` |
+| `scale_rate` | `0.3` | `1.0` |
+| `rate` | `10.0` | `100.0` |
+| `particle_scatter_ratio` | `0.2` | `1.0` |
+
+This makes larger fire areas emit longer-lived, faster, denser, and more widely scattered smoke while keeping small fires visually restrained.
+
+**Fire Model Placement**
+
+For each smoke area, FireGenerator also inserts one or more:
+
+```xml
+<include>
+    <name>fire_model_<fire_id>_<model_id></name>
+    <uri>model://fire_model</uri>
+    <pose>x y z 0 0 yaw</pose>
+</include>
+```
+
+The number of visible `fire_model` instances scales with smoke size:
+
+- smoke size below or equal to `10`: one fire model
+- smoke size from `10` to `20`: two fire models
+- every additional `10` units adds one more fire model
+
+Each `fire_model` is placed randomly inside the square smoke area. A `10` unit padding is used where the smoke area is large enough so that fire models are not placed at the smoke boundary. For smaller smoke areas that cannot fit a full `10` unit padding, the padding is reduced proportionally.
+
+Each fire model's `z` value is computed from its own random `(x, y)` position by converting back to heightmap pixels and querying the local terrain height with `pixel_to_world()`. A small vertical offset is then applied so the visible fire sits above the ground.
+
+**World Plugins**
+
+When fires are generated, the node injects the required Gazebo systems into the output world if the particle emitter system is not already present:
+
+```xml
+<plugin filename="gz-sim-particle-emitter-system" name="gz::sim::systems::ParticleEmitter"></plugin>
+<plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+  <render_engine>ogre2</render_engine>
+</plugin>
+```
+
+The generated XML also includes the standard physics, user command, and scene broadcaster systems used by the simulation world.
+
+**Key Methods**
+
+| Method | Description |
+|------|-------------|
+| `generate_fires()` | Main placement loop. Randomly samples pixels and accepts valid fire positions until `num_fires` is reached or attempts exceed the limit. |
+| `is_valid_fire_position(px, py, fires)` | Validity check for a candidate fire center: border constraints, optional dirt-layer check, and distance check against existing fires. |
+| `get_fire_size_range()` | Sorts and clamps `min_fire_size` / `max_fire_size` to the supported fire-size range. |
+| `calculate_particle_parameters(fire_size)` | Computes lifetime, velocity, scale, rate, and scatter values by linear interpolation from size `1.0` to size `50.0`. |
+| `create_fire_model_includes_xml(world_x, world_y, fire_id, fire_size)` | Creates the `fire_model` include blocks randomly inside the smoke area and corrects each model's height using local terrain data. |
+| `create_fire_particle_emitter_xml(...)` | Creates the smoke particle emitter XML and combines it with the fire model includes for one generated fire area. |
+| `generate_fires_xml(fires)` | Converts all accepted fire placements into XML to inject into the output world. |
+
+**Output**
+
+What is written into the world:
+
+- One `fire_smoke_<id>` particle emitter model per accepted fire
+- One or more `fire_model_<fire_id>_<model_id>` includes inside each smoke area
+- Required Gazebo particle emitter plugin XML, if needed
+- Randomized smoke color ranges using `fogcolors.png` or `smokecolors.png`
+- Randomized fire model yaw for visual variation
+
+**Assumptions**
+
+- `models/fog_generator/` is installed with `fog.png`, `fogcolors.png`, and `smokecolors.png`.
+- `models/fire_model/` is installed with `model.sdf`, its meshes, and required texture files.
+- The terrain model and heightmap are available so FireGenerator can compute local ground height for each fire model.
 
 ### 5. update_heightmap script (Heightmap → Terrain SDF Update)
 
