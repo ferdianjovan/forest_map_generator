@@ -6,9 +6,12 @@ import rclpy
 import random
 import numpy as np
 import xml.etree.ElementTree as ET
+import yaml
 
 from rclpy.node import Node
 from ament_index_python.packages import get_package_share_directory
+
+from forest_map_generator.world_gazebo_magnetic_calculator import generate_world_geography
 
 
 # Terrain helper class
@@ -208,6 +211,23 @@ class TerrainHelper:
         py = max(0, min(height - 1, py))
         return px, py
 
+    @staticmethod
+    def create_plugins_xml():
+        return (
+        """
+        <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"></plugin>
+        <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"></plugin>
+        <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"></plugin>
+        <plugin filename="gz-sim-particle-emitter-system" name="gz::sim::systems::ParticleEmitter"></plugin>
+        <plugin filename="gz-sim-imu-system" name="gz::sim::systems::Imu"/>
+        <plugin filename="gz-sim-air-pressure-system" name="gz::sim::systems::AirPressure"/>
+        <plugin filename="gz-sim-magnetometer-system" name="gz::sim::systems::Magnetometer"/>
+        <plugin filename="gz-sim-navsat-system" name="gz::sim::systems::NavSat"/>
+        <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+          <render_engine>ogre2</render_engine>
+        </plugin>
+        """
+        )
 
 # Tree generation class
 class TreeGenerator(TerrainHelper):
@@ -363,20 +383,6 @@ class FireGenerator(TerrainHelper):
                 return False
 
         return True
-
-    @staticmethod
-    def create_particle_emitter_plugin_xml():
-        return (
-            """
-                <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"></plugin>
-                <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"></plugin>
-                <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"></plugin>
-                <plugin filename="gz-sim-particle-emitter-system" name="gz::sim::systems::ParticleEmitter"></plugin>
-                <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
-                  <render_engine>ogre2</render_engine>
-                </plugin>
-            """
-        )
 
     @classmethod
     def interpolate_particle_parameter(cls, fire_size, parameter_name):
@@ -547,40 +553,153 @@ class FireGenerator(TerrainHelper):
 
 # Main node
 class ForestMapGenerator(Node):
+    REQUIRED_MAP_CONFIGURATION_KEYS = (
+        "latitude",
+        "longitude",
+        "altitude",
+        "num_trees",
+        "tree_types",
+        "min_tree_distance",
+        "max_slope",
+        "plant_tree_above_dirt",
+        "num_fires",
+        "min_fire_distance",
+        "plant_fire_above_dirt",
+        "min_fire_size",
+        "max_fire_size",
+    )
+
     def __init__(self):
         super().__init__("forest_map_generator")
         self.get_logger().info("Forest Map Generator Node started.")
 
-        self.declare_parameter("num_trees", 50)
-        self.declare_parameter("tree_types", ["oak_tree", "pine_tree"])
-        self.declare_parameter("min_tree_distance", 5.0)
-        self.declare_parameter("max_slope", 30.0)
-        self.declare_parameter("output_world_file", "world_with_trees.world")
-        self.declare_parameter("plant_tree_above_dirt", False)
-        self.declare_parameter("num_fires", 5)
-        self.declare_parameter("min_fire_distance", 5.0)
-        self.declare_parameter("plant_fire_above_dirt", False)
-        self.declare_parameter("min_fire_size", 2.0)
-        self.declare_parameter("max_fire_size", 10.0)
-
-        self.num_trees = self.get_parameter("num_trees").value
-        self.tree_types = self.get_parameter("tree_types").value
-        self.min_tree_distance = self.get_parameter("min_tree_distance").value
-        self.max_slope = self.get_parameter("max_slope").value
-        self.output_world_file = self.get_parameter("output_world_file").value
-        self.plant_tree_above_dirt = self.get_parameter("plant_tree_above_dirt").value
-        self.num_fires = self.get_parameter("num_fires").value
-        self.min_fire_distance = self.get_parameter("min_fire_distance").value
-        self.plant_fire_above_dirt = self.get_parameter("plant_fire_above_dirt").value
-        self.min_fire_size = self.get_parameter("min_fire_size").value
-        self.max_fire_size = self.get_parameter("max_fire_size").value
-
         self.package_path = get_package_share_directory("forest_map_generator")
+        default_map_configuration_file = os.path.join(
+            self.package_path, "configs", "map_configuration.yaml"
+        )
+
+        self.declare_parameter(
+            "map_configuration_file", default_map_configuration_file
+        )
+        self.declare_parameter("output_world_file", "world_with_trees.world")
+
+        self.map_configuration_file = self.get_parameter(
+            "map_configuration_file"
+        ).value
+        self.output_world_file = self.get_parameter("output_world_file").value
+
+        map_configuration = self.load_map_configuration(self.map_configuration_file)
+        self.apply_map_configuration(map_configuration)
 
         self.tree_generator = TreeGenerator(self)
         self.fire_generator = FireGenerator(self)
 
         self.run_generation()
+
+    def resolve_map_configuration_path(self, map_configuration_file):
+        expanded_path = os.path.expanduser(map_configuration_file)
+        if os.path.isabs(expanded_path):
+            return expanded_path
+
+        package_relative_path = os.path.join(self.package_path, expanded_path)
+        if os.path.exists(package_relative_path):
+            return package_relative_path
+
+        return os.path.abspath(expanded_path)
+
+    @staticmethod
+    def normalize_yaml_mapping(raw_configuration):
+        if isinstance(raw_configuration, dict):
+            return raw_configuration
+
+        if isinstance(raw_configuration, list):
+            configuration = {}
+            for item in raw_configuration:
+                if not isinstance(item, dict):
+                    raise ValueError(
+                        "Every list item in map configuration must be a mapping."
+                    )
+                configuration.update(item)
+            return configuration
+
+        raise ValueError("Map configuration YAML must contain a mapping.")
+
+    def load_map_configuration(self, map_configuration_file):
+        configuration_path = self.resolve_map_configuration_path(
+            map_configuration_file
+        )
+        if not os.path.isfile(configuration_path):
+            raise FileNotFoundError(
+                f"Map configuration file does not exist: {configuration_path}"
+            )
+
+        with open(configuration_path, "r", encoding="utf-8") as config_file:
+            raw_configuration = yaml.safe_load(config_file) or {}
+
+        configuration = self.normalize_yaml_mapping(raw_configuration)
+        missing_keys = [
+            key for key in self.REQUIRED_MAP_CONFIGURATION_KEYS
+            if key not in configuration
+        ]
+        if missing_keys:
+            raise ValueError(
+                "Map configuration is missing required key(s): "
+                + ", ".join(missing_keys)
+            )
+
+        self.get_logger().info(
+            f"Loaded map configuration from: {configuration_path}"
+        )
+        return configuration
+
+    @staticmethod
+    def as_bool(value, key):
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            normalized_value = value.strip().lower()
+            if normalized_value in {"1", "true", "yes", "on"}:
+                return True
+            if normalized_value in {"0", "false", "no", "off"}:
+                return False
+        raise ValueError(f"Map configuration key '{key}' must be a boolean.")
+
+    @staticmethod
+    def as_string_list(value, key):
+        if not isinstance(value, list) or not value:
+            raise ValueError(
+                f"Map configuration key '{key}' must be a non-empty list."
+            )
+
+        string_values = []
+        for item in value:
+            if not isinstance(item, str) or not item:
+                raise ValueError(
+                    f"Every item in map configuration key '{key}' must be a string."
+                )
+            string_values.append(item)
+        return string_values
+
+    def apply_map_configuration(self, configuration):
+        self.latitude = float(configuration["latitude"])
+        self.longitude = float(configuration["longitude"])
+        self.altitude = float(configuration["altitude"])
+        self.num_trees = int(configuration["num_trees"])
+        self.tree_types = self.as_string_list(
+            configuration["tree_types"], "tree_types"
+        )
+        self.min_tree_distance = float(configuration["min_tree_distance"])
+        self.max_slope = float(configuration["max_slope"])
+        self.plant_tree_above_dirt = self.as_bool(
+            configuration["plant_tree_above_dirt"], "plant_tree_above_dirt"
+        )
+        self.num_fires = int(configuration["num_fires"])
+        self.min_fire_distance = float(configuration["min_fire_distance"])
+        self.plant_fire_above_dirt = self.as_bool(
+            configuration["plant_fire_above_dirt"], "plant_fire_above_dirt"
+        )
+        self.min_fire_size = float(configuration["min_fire_size"])
+        self.max_fire_size = float(configuration["max_fire_size"])
 
     def get_source_worlds_path(self):
         package_path_parts = os.path.abspath(self.output_world_file).split(os.sep)
@@ -632,20 +751,20 @@ class ForestMapGenerator(Node):
             self.get_logger().error(f"Failed to read world file: {e}")
             return False
 
-        if fires_xml and "gz-sim-particle-emitter-system" not in world_content:
-            world_tag_start = world_content.find("<world")
-            world_tag_end = world_content.find(">", world_tag_start)
+        world_tag_start = world_content.find("<world")
+        world_tag_end = world_content.find(">", world_tag_start)
 
-            if world_tag_start == -1 or world_tag_end == -1:
-                self.get_logger().error("Invalid world file: missing <world> tag.")
-                return False
+        if world_tag_start == -1 or world_tag_end == -1:
+            self.get_logger().error("Invalid world file: missing <world> tag.")
+            return False
 
-            world_content = (
-                world_content[: world_tag_end + 1]
-                + "\n"
-                + FireGenerator.create_particle_emitter_plugin_xml()
-                + world_content[world_tag_end + 1 :]
-            )
+        world_location_xml = generate_world_geography(self.latitude, self.longitude, self.altitude)
+        world_content = (
+            world_content[: world_tag_end + 1] + "\n"
+            + world_location_xml + "\n"
+            + TerrainHelper.create_plugins_xml()
+            + world_content[world_tag_end + 1 :]
+        )
 
         combined_xml = trees_xml + fires_xml
 

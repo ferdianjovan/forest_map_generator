@@ -1,6 +1,6 @@
-# forest_map_generator (ROS2 Humble + Gazebo Fortress)
+# forest_map_generator (ROS2 Jazzy + Gazebo Harmonic)
 
-A ROS 2 package for generating forest simulation environments in Gazebo Fortress, including
+A ROS 2 package for generating forest simulation environments in Gazebo Harmonic, including
 terrain heightmaps, procedural tree placement, and fire/smoke generation.
 
 <p align="center">
@@ -30,6 +30,20 @@ This project provides a complete pipeline to build a forest scene for Gazebo fro
 1) a terrain heightmap (PNG) used by the `terrain` model, and  
 2) tree assets (either built-in models such as `oak_tree` / `pine_tree`, or textured meshes generated from point clouds), and
 3) fire assets represented by visible `fire_model` instances and `fog_generator` smoke particle emitters.
+
+Please install python package `wmm-calculator` to avoid getting an error.
+
+Generated worlds also include a standard set of Gazebo system plugins every time the generator writes the output `.world` file. 
+This is intentional: the generated world is expected to be ready for terrain physics, scene publication, particle emitters, and common simulated sensors without requiring the user to manually add systems later. 
+The inserted systems currently include physics, user commands, scene broadcaster, particle emitter, IMU, air pressure, magnetometer, NavSat, and the Gazebo sensors system using the `ogre2` render engine. 
+These plugins are loaded regardless of whether a particular generated scene currently contains fires, smoke, or sensor-equipped vehicles; do not use their presence alone as evidence that those entities were generated. 
+If the base world is customized, avoid duplicating the same system plugin declarations unless that duplication is deliberate.
+
+The generated forest poses use Gazebo world-frame coordinates derived from the terrain heightmap, not arbitrary map coordinates. 
+`TerrainHelper` reads the terrain model's heightmap `<size>` and `<pos>` values from `models/terrain/model.sdf`, samples the heightmap pixels, and converts accepted tree/fire pixels into local Gazebo `(x, y, z)` poses. 
+The `latitude`, `longitude`, and `altitude` values in `configs/map_configuration.yaml` are then used to write `<spherical_coordinates>` and `<magnetic_field>` metadata into the world. 
+It is preferable for those geographic values to be representative of, or based on, the same real terrain / heightmap region used to generate the forest world. 
+The local placement logic will still work if they do not match, but GPS, magnetic-field, and world-geography assumptions will no longer describe the visible terrain consistently.
 
 The core workflow is:
 

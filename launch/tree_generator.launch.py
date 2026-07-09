@@ -1,11 +1,28 @@
 #!/usr/bin/env python3
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
+    this_pkg = FindPackageShare("forest_map_generator")
+
     return LaunchDescription(
         [
+            DeclareLaunchArgument(
+                "map_configuration_file",
+                default_value=PathJoinSubstitution(
+                    [this_pkg, "configs", "map_configuration.yaml"]
+                ),
+                description="Path to the map-generation YAML configuration file.",
+            ),
+            DeclareLaunchArgument(
+                "output_world_file",
+                default_value="world_with_trees.world",
+                description="Generated world file name or path.",
+            ),
             Node(
                 package="forest_map_generator",
                 executable="forest_map_generator",
@@ -13,27 +30,10 @@ def generate_launch_description():
                 output="screen",
                 parameters=[
                     {
-                        "num_trees": 200,
-                        "tree_types": [
-                            "tree1",
-                            "tree2",
-                            "tree3",
-                            "tree4",
-                            "tree5",
-                            "tree6",
-                            "tree7",
-                            "tree8",
-                            "tree9",
-                            "tree10",
-                            "tree11",
-                            "tree12",
-                            "tree13",
-                            "tree14",
-                        ],
-                        "min_tree_distance": 5.0,
-                        "max_slope": 30.0,
-                        "plant_tree_above_dirt": True,
-                        "output_world_file": "world_with_trees.world",
+                        "map_configuration_file": LaunchConfiguration(
+                            "map_configuration_file"
+                        ),
+                        "output_world_file": LaunchConfiguration("output_world_file"),
                     }
                 ],
             ),

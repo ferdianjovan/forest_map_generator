@@ -1,0 +1,31 @@
+latitude: 56.68013
+longitude: -3.17971
+altitude: 206.0
+
+num_trees: 100
+tree_types:
+  - oak_tree
+  - pine_tree
+  - tree1
+  - tree2
+  - tree3
+  - tree4
+  - tree5
+  - tree6
+  - tree7
+  - tree8
+  - tree9
+  - tree10
+  - tree11
+  - tree12
+  - tree13
+  - tree14
+min_tree_distance: 1.0
+max_slope: 30.0
+plant_tree_above_dirt: true
+
+num_fires: 5
+min_fire_distance: 10.0
+plant_fire_above_dirt: true
+min_fire_size: 5.0
+max_fire_size: 50.0

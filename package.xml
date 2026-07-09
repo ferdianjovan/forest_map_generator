@@ -12,6 +12,7 @@
   <depend>python3-opencv</depend>
   <depend>python3-numpy</depend>
   <depend>python3-pil</depend>
+  <depend>python3-yaml</depend>
   <depend>gazebo_msgs</depend>
 
   <test_depend>ament_copyright</test_depend>
